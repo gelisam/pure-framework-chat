@@ -15,6 +15,8 @@ displayTUI mkPicture = withVty $ \vty -> do
     displayRegion <- displayBounds out
     let picture = picForImage (mkPicture displayRegion)
     update vty picture
+
+    -- press any key to continue
     _ <- nextEvent vty
     pure ()
 
