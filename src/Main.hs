@@ -1,22 +1,20 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import Control.Exception
 import Graphics.Vty
-
+import Graphics.Vty.Inline
 
 displayTUI
   :: (DisplayRegion -> Image)
   -> IO ()
-displayTUI mkPicture = do
-  out <- standardIOConfig >>= outputForConfig
-  bracket_ (reserveDisplay out) (releaseDisplay out) $ do
-    displayRegion <- displayBounds out
-    displayCtx <- displayContext out displayRegion
-    let picture = picForImage (mkPicture displayRegion)
-    outputPicture displayCtx picture
-    _ <- getLine
-    pure ()
+displayTUI mkPicture = withVty $ \vty -> do
+  let out = outputIface vty
+  displayRegion <- displayBounds out
+  displayCtx <- displayContext out displayRegion
+  let picture = picForImage (mkPicture displayRegion)
+  outputPicture displayCtx picture
+  _ <- getLine
+  pure ()
 
 center
   :: DisplayRegion
