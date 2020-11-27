@@ -8,12 +8,10 @@ displayTUI
   :: (DisplayRegion -> Image)
   -> IO ()
 displayTUI mkPicture = withVty $ \vty -> do
-  let out = outputIface vty
-  displayRegion <- displayBounds out
-  displayCtx <- displayContext out displayRegion
+  displayRegion <- displayBounds (outputIface vty)
   let picture = picForImage (mkPicture displayRegion)
-  outputPicture displayCtx picture
-  _ <- getLine
+  update vty picture
+  _ <- nextEvent vty
   pure ()
 
 center
