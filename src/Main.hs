@@ -1,38 +1,23 @@
-{-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import Control.Exception
-import Graphics.Vty
-import Graphics.Vty.Inline
+import Control.Monad
+import Data.Foldable
+
+import ImperativeVty
 
 
-displayTUI
-  :: (DisplayRegion -> Image)
-  -> IO ()
-displayTUI mkPicture = withVty $ \vty -> do
-  let out = outputIface vty
-  bracket_ (reserveDisplay out) (releaseDisplay out) $ do
-    displayRegion <- displayBounds out
-    let picture = picForImage (mkPicture displayRegion)
-    update vty picture
+drawCenteredTextBlock :: [String] -> IO ()
+drawCenteredTextBlock ss = do
+  (ww, hh) <- getScreenSize
+  let w = maximum (0 : fmap length ss)
+  let h = length ss
+  let x = (ww - w) `div` 2
+  let y = (hh - h) `div` 2
+  for_ (zip [0..] ss) $ \(i, s) -> do
+    putStrAt (x, y + i) s
 
-    -- press any key to continue
-    _ <- nextEvent vty
-    pure ()
-
-center
-  :: DisplayRegion
-  -> Image
-  -> Image
-center (ww, hh) img = translate ((ww - w) `div` 2)
-                                ((hh - h) `div` 2)
-                                img
-  where
-    w = imageWidth img
-    h = imageHeight img
-
-main
-  :: IO ()
-main = displayTUI $ \displayRegion
-  -> center displayRegion
-   $ string defAttr "hello world"
+main :: IO ()
+main = withTerminal $ do
+  clearScreen
+  drawCenteredTextBlock ["hello world"]
+  void waitForKey
