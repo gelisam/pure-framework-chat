@@ -127,57 +127,51 @@ handleEditboxKey = \case
   _ -- unrecognized, let the event bubble up
     -> Nothing
 
-handleUsernameFormKey :: UsernameForm -> Key -> Either Username UsernameForm
-handleUsernameFormKey usernameForm = \case
-  KEnter
-    -- choose username
-    -> Left $ readUsername usernameForm
-  (handleEditboxKey -> Just f)
-    -- edit the username
-    -> Right $ modifyUsername f usernameForm
-  _ -> Right usernameForm
+data Screen = Screen
+  { render    :: (Int, Int) -> TextPicture
+  , handleKey :: Key -> Maybe Screen
+  }
 
-handleChatLoopKey :: Username -> Chat -> Key -> Maybe Chat
-handleChatLoopKey username chat = \case
-  KEsc
-    -- quit
-    -> Nothing
-  KEnter
-    -- add the edit box's message, clear the edit box
-    -> Just $ modifyEditbox (const "")
-            $ addMessage username (readEditbox chat)
-            $ chat
-  (handleEditboxKey -> Just f)
-    -- delegate to the edit box
-    -> Just $ modifyEditbox f chat
-  _ -> Just chat
+initialScreen :: Screen
+initialScreen = usernameScreen initialUsernameForm
 
-data Program
-  = UsernameLoop UsernameForm
-  | ChatLoop Username Chat
+usernameScreen :: UsernameForm -> Screen
+usernameScreen usernameForm = Screen
+  { render    = renderUsernameForm usernameForm
+  , handleKey = \case
+      KEsc
+        -- quit
+        -> Nothing
+      KEnter
+       -- the user picked a username; proceed to the chat loop
+        -> Just $ chatLoopScreen (readUsername usernameForm) initialChat
+      (handleEditboxKey -> Just f)
+        -- edit the username
+        -> Just $ usernameScreen
+                $ modifyUsername f usernameForm
+      _ -> Just $ usernameScreen usernameForm
+  }
 
-initialProgram :: Program
-initialProgram = UsernameLoop initialUsernameForm
-
-renderProgram :: Program -> (Int, Int) -> TextPicture
-renderProgram = \case
-  UsernameLoop usernameForm
-    -> renderUsernameForm usernameForm
-  ChatLoop _ chat
-    -> renderChat chat
-
-handleProgramKey :: Program -> Key -> Maybe Program
-handleProgramKey program key = case program of
-  UsernameLoop usernameForm
-    -> case handleUsernameFormKey usernameForm key of
-         Left username
-           -- the user picked a username; proceed to the chat loop
-           -> Just $ ChatLoop username initialChat
-         Right usernameForm'
-           -- stay in the username form
-           -> Just $ UsernameLoop usernameForm'
-  ChatLoop username chat
-    -> ChatLoop username <$> handleChatLoopKey username chat key
+chatLoopScreen :: Username -> Chat -> Screen
+chatLoopScreen username chat = Screen
+  { render    = renderChat chat
+  , handleKey = \case
+      KEsc
+        -- quit
+        -> Nothing
+      KEnter
+        -- add the edit box's message, clear the edit box
+        -> Just $ chatLoopScreen username
+                $ modifyEditbox (const "")
+                $ addMessage username (readEditbox chat)
+                $ chat
+      (handleEditboxKey -> Just f)
+        -- delegate to the edit box
+        -> Just $ chatLoopScreen username
+                $ modifyEditbox f
+                $ chat
+      _ -> Just $ chatLoopScreen username chat
+  }
 
 main :: IO ()
-main = playTUI initialProgram renderProgram handleProgramKey
+main = playTUI initialScreen render handleKey
