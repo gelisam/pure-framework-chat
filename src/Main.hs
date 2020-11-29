@@ -1,23 +1,22 @@
 module Main where
 
-import Control.Monad
-import Data.Foldable
-
-import ImperativeVty
+import PureFramework.TUI
 
 
-drawCenteredTextBlock :: [String] -> IO ()
-drawCenteredTextBlock ss = do
-  (ww, hh) <- getScreenSize
-  let w = maximum (0 : fmap length ss)
-  let h = length ss
-  let x = (ww - w) `div` 2
-  let y = (hh - h) `div` 2
-  for_ (zip [0..] ss) $ \(i, s) -> do
-    putStrAt (x, y + i) s
+textBlock :: [String] -> TextPicture
+textBlock ss
+  = mconcat [ Translated (0, y) (Text s)
+            | (y, s) <- zip [0..] ss
+            ]
+
+centeredTextBlock :: [String] -> (Int, Int) -> TextPicture
+centeredTextBlock ss (ww, hh)
+  = Translated (x, y) (textBlock ss)
+  where
+    w = maximum (0 : fmap length ss)
+    h = length ss
+    x = (ww - w) `div` 2
+    y = (hh - h) `div` 2
 
 main :: IO ()
-main = withTerminal $ do
-  clearScreen
-  drawCenteredTextBlock ["hello world"]
-  void waitForKey
+main = displayTUI (centeredTextBlock ["hello world"])
