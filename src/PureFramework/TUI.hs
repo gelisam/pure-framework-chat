@@ -1,7 +1,11 @@
 {-# LANGUAGE LambdaCase #-}
-module PureFramework.TUI where
+module PureFramework.TUI
+  ( module PureFramework.TUI
+  , Key(..)
+  ) where
 
 import Control.Monad
+import Data.Function
 
 import ImperativeVty
 
@@ -36,3 +40,21 @@ displayTUI mkTextPicture = withTerminal $ do
   screenSize <- getScreenSize
   drawTextPicture (mkTextPicture screenSize)
   void waitForKey
+
+playTUI
+  :: world
+  -> (world -> (Int, Int) -> TextPicture)
+  -> (world -> Key -> Maybe world)
+  -> IO ()
+playTUI world0 mkTextPicture handleKey = withTerminal $ do
+  screenSize <- getScreenSize
+  flip fix world0 $ \loop world -> do
+    clearScreen
+    drawTextPicture (mkTextPicture world screenSize)
+    key <- waitForKey
+    case handleKey world key of
+      Nothing -> do
+        -- quit
+        pure ()
+      Just world' -> do
+        loop world'
