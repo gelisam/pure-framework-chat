@@ -1,9 +1,6 @@
 {-# LANGUAGE LambdaCase, RecordWildCards, ViewPatterns #-}
 module Main where
 
-import Data.Function
-
-import ImperativeVty
 import PureFramework.TUI
 
 
@@ -106,24 +103,20 @@ handleEditboxKey = \case
   _ -- unrecognized, let the event bubble up
     -> Nothing
 
+handleChatKey :: Chat -> Key -> Maybe Chat
+handleChatKey chat = \case
+  KEsc
+    -- quit
+    -> Nothing
+  KEnter
+    -- add the edit box's message, clear the edit box
+    -> Just $ modifyEditbox (const "")
+            $ addMessage "user" (readEditbox chat)
+            $ chat
+  (handleEditboxKey -> Just f)
+    -- delegate to the edit box
+    -> Just $ modifyEditbox f chat
+  _ -> Just chat
+
 main :: IO ()
-main = withTerminal $ do
-  screenSize <- getScreenSize
-  flip fix initialChat $ \loop chat -> do
-    clearScreen
-    drawTextPicture (renderChat chat screenSize)
-    waitForKey >>= \case
-      KEsc -> do
-        -- quit
-        pure ()
-      KEnter -> do
-        -- add the edit box's message, clear the edit box
-        loop $ modifyEditbox (const "")
-             $ addMessage "user" (readEditbox chat)
-             $ chat
-      (handleEditboxKey -> Just f) -> do
-        -- delegate to the edit box
-        loop $ modifyEditbox f chat
-      _ -> do
-        -- unrecognized key; do nothing
-        loop chat
+main = playTUI initialChat renderChat handleChatKey
