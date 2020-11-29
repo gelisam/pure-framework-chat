@@ -1,8 +1,6 @@
 {-# LANGUAGE LambdaCase, RecordWildCards, ViewPatterns #-}
 module Main where
 
-import Data.Function
-
 import ImperativeVty
 import PureFramework.TUI
 
@@ -96,8 +94,23 @@ renderMessages messages (w, h)
     block = reverse . take h . concatMap reverse $ blocks
 
 
-renderUsernameForm :: Username -> (Int, Int) -> TextPicture
-renderUsernameForm username
+-- we don't really need this layer of indirection, but it makes the signature
+-- of handleUsernameFormKey easier to understand in the blog post.
+data UsernameForm = UsernameForm
+  { formUsername :: Username
+  }
+
+initialUsernameForm :: UsernameForm
+initialUsernameForm = UsernameForm "user"
+
+readUsername :: UsernameForm -> Username
+readUsername (UsernameForm username) = username
+
+modifyUsername :: (Username -> Username) -> UsernameForm -> UsernameForm
+modifyUsername f (UsernameForm username) = UsernameForm (f username)
+
+renderUsernameForm :: UsernameForm -> (Int, Int) -> TextPicture
+renderUsernameForm (UsernameForm username)
   = centeredTextBlock [ "Please pick a username."
                       , ""
                       , "> " ++ username ++ "_"
@@ -114,46 +127,57 @@ handleEditboxKey = \case
   _ -- unrecognized, let the event bubble up
     -> Nothing
 
-pickUsername :: IO Username
-pickUsername = do
-  screenSize <- getScreenSize
-  flip fix "user" $ \loop username -> do
-    clearScreen
-    drawTextPicture (renderUsernameForm username screenSize)
-    waitForKey >>= \case
-      KEnter -> do
-        -- choose username
-        pure username
-      (handleEditboxKey -> Just f) -> do
-        -- edit the username
-        loop $ f username
-      _ -> do
-        -- unrecognized key; do nothing
-        loop username
+handleUsernameFormKey :: UsernameForm -> Key -> Either Username UsernameForm
+handleUsernameFormKey usernameForm = \case
+  KEnter
+    -- choose username
+    -> Left $ readUsername usernameForm
+  (handleEditboxKey -> Just f)
+    -- edit the username
+    -> Right $ modifyUsername f usernameForm
+  _ -> Right usernameForm
 
-chatLoop :: Username -> IO ()
-chatLoop username = do
-  screenSize <- getScreenSize
-  flip fix initialChat $ \loop chat -> do
-    clearScreen
-    drawTextPicture (renderChat chat screenSize)
-    waitForKey >>= \case
-      KEsc -> do
-        -- quit
-        pure ()
-      KEnter -> do
-        -- add the edit box's message, clear the edit box
-        loop $ modifyEditbox (const "")
-             $ addMessage username (readEditbox chat)
-             $ chat
-      (handleEditboxKey -> Just f) -> do
-        -- delegate to the edit box
-        loop $ modifyEditbox f chat
-      _ -> do
-        -- unrecognized key; do nothing
-        loop chat
+handleChatLoopKey :: Username -> Chat -> Key -> Maybe Chat
+handleChatLoopKey username chat = \case
+  KEsc
+    -- quit
+    -> Nothing
+  KEnter
+    -- add the edit box's message, clear the edit box
+    -> Just $ modifyEditbox (const "")
+            $ addMessage username (readEditbox chat)
+            $ chat
+  (handleEditboxKey -> Just f)
+    -- delegate to the edit box
+    -> Just $ modifyEditbox f chat
+  _ -> Just chat
+
+data Program
+  = UsernameLoop UsernameForm
+  | ChatLoop Username Chat
+
+initialProgram :: Program
+initialProgram = UsernameLoop initialUsernameForm
+
+renderProgram :: Program -> (Int, Int) -> TextPicture
+renderProgram = \case
+  UsernameLoop usernameForm
+    -> renderUsernameForm usernameForm
+  ChatLoop _ chat
+    -> renderChat chat
+
+handleProgramKey :: Program -> Key -> Maybe Program
+handleProgramKey program key = case program of
+  UsernameLoop usernameForm
+    -> case handleUsernameFormKey usernameForm key of
+         Left username
+           -- the user picked a username; proceed to the chat loop
+           -> Just $ ChatLoop username initialChat
+         Right usernameForm'
+           -- stay in the username form
+           -> Just $ UsernameLoop usernameForm'
+  ChatLoop username chat
+    -> ChatLoop username <$> handleChatLoopKey username chat key
 
 main :: IO ()
-main = withTerminal $ do
-  username <- pickUsername
-  chatLoop username
+main = playTUI initialProgram renderProgram handleProgramKey
