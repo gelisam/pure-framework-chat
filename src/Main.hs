@@ -1,6 +1,9 @@
 {-# LANGUAGE LambdaCase, RecordWildCards, ViewPatterns #-}
 module Main where
 
+import Data.Function
+
+import ImperativeVty
 import PureFramework.TUI
 
 
@@ -92,6 +95,14 @@ renderMessages messages (w, h)
     blocks = fmap (wrapText w . renderMessage) messages
     block = reverse . take h . concatMap reverse $ blocks
 
+
+renderUsernameForm :: Username -> (Int, Int) -> TextPicture
+renderUsernameForm username
+  = centeredTextBlock [ "Please pick a username."
+                      , ""
+                      , "> " ++ username ++ "_"
+                      ]
+
 handleEditboxKey :: Key -> Maybe (String -> String)
 handleEditboxKey = \case
   KBS
@@ -103,20 +114,46 @@ handleEditboxKey = \case
   _ -- unrecognized, let the event bubble up
     -> Nothing
 
-handleChatKey :: Chat -> Key -> Maybe Chat
-handleChatKey chat = \case
-  KEsc
-    -- quit
-    -> Nothing
-  KEnter
-    -- add the edit box's message, clear the edit box
-    -> Just $ modifyEditbox (const "")
-            $ addMessage "user" (readEditbox chat)
-            $ chat
-  (handleEditboxKey -> Just f)
-    -- delegate to the edit box
-    -> Just $ modifyEditbox f chat
-  _ -> Just chat
+pickUsername :: IO Username
+pickUsername = do
+  screenSize <- getScreenSize
+  flip fix "user" $ \loop username -> do
+    clearScreen
+    drawTextPicture (renderUsernameForm username screenSize)
+    waitForKey >>= \case
+      KEnter -> do
+        -- choose username
+        pure username
+      (handleEditboxKey -> Just f) -> do
+        -- edit the username
+        loop $ f username
+      _ -> do
+        -- unrecognized key; do nothing
+        loop username
+
+chatLoop :: Username -> IO ()
+chatLoop username = do
+  screenSize <- getScreenSize
+  flip fix initialChat $ \loop chat -> do
+    clearScreen
+    drawTextPicture (renderChat chat screenSize)
+    waitForKey >>= \case
+      KEsc -> do
+        -- quit
+        pure ()
+      KEnter -> do
+        -- add the edit box's message, clear the edit box
+        loop $ modifyEditbox (const "")
+             $ addMessage username (readEditbox chat)
+             $ chat
+      (handleEditboxKey -> Just f) -> do
+        -- delegate to the edit box
+        loop $ modifyEditbox f chat
+      _ -> do
+        -- unrecognized key; do nothing
+        loop chat
 
 main :: IO ()
-main = playTUI initialChat renderChat handleChatKey
+main = withTerminal $ do
+  username <- pickUsername
+  chatLoop username
