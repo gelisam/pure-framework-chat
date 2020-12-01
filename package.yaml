@@ -10,6 +10,8 @@ extra-source-files:
 
 dependencies:
 - base
+- bytestring
+- network-simple
 - stm
 - vty
 
