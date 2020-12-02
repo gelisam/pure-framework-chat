@@ -9,10 +9,12 @@ extra-source-files:
 - README.md
 
 dependencies:
+- async
 - base
 - bytestring
 - network-simple
 - stm
+- stm-chans
 - vty
 
 executables:
