@@ -4,6 +4,7 @@ module ImperativeVty
   , clearScreen
   , getScreenSize
   , putStrAt
+  , refreshScreen
   , waitForKey, Key(..)
   ) where
 
@@ -86,14 +87,16 @@ putStrAt (x, y) = updateScreen
                 . translate x y
                 . string defAttr
 
-waitForEvent :: IO Event
-waitForEvent = do
-  -- to avoid flickering, only refresh the screen when we wait for
-  -- input, not every time we call putStrAt.
+-- to avoid flickering, we only update the screen when this is called, not
+-- every time we call putStrAt.
+refreshScreen :: IO ()
+refreshScreen = do
   displayCtx <- getDisplayContext
   picture <- readIORef screen
   outputPicture displayCtx picture
 
+waitForEvent :: IO Event
+waitForEvent = do
   let eventChannel = _eventChannel input
   atomically $ readTChan eventChannel
 

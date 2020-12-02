@@ -46,6 +46,7 @@ displayTUI mkTextPicture = withTerminal $ do
   clearScreen
   screenSize <- getScreenSize
   drawTextPicture (mkTextPicture screenSize)
+  refreshScreen
   void waitForKey
 
 -- A variant of playTUI in which the current world is controlled
@@ -62,6 +63,7 @@ roboPlayTUI mkTextPicture worldQueue = do
       Just world -> do
         clearScreen
         drawTextPicture (mkTextPicture world screenSize)
+        refreshScreen
         loop
       Nothing -> do
         -- quit
