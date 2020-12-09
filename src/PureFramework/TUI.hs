@@ -1,104 +1,35 @@
-{-# LANGUAGE LambdaCase, OverloadedStrings, RecordWildCards, ScopedTypeVariables, ViewPatterns #-}
+{-# LANGUAGE LambdaCase, OverloadedStrings, ScopedTypeVariables #-}
 module PureFramework.TUI
-  ( module PureFramework.TUI
-  , Key(..)
+  ( module PureFramework.ClientServer.Types
+  , module PureFramework.TUI
+  , module PureFramework.TUI.Types
   ) where
 
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TMQueue
-import Control.Monad
-import Data.Function
+import Data.Binary (Binary)
 import System.Environment (getArgs, getProgName)
 import System.Exit (exitFailure)
---import qualified Data.ByteString as ByteString
 import qualified Network.Simple.TCP as TCP
 
 import ImperativeVty
+import PureFramework.ClientServer.Types
+import PureFramework.Threads
+import PureFramework.TUI.Threads
+import PureFramework.TUI.Types
+import PureFramework.TUI.StreamFramework
+import qualified PureFramework.ClientServer.IOFramework as IOFramework
 
-
-data TextPicture
-  = Text String
-  | Translated (Int, Int) TextPicture
-  | Over TextPicture TextPicture
-
-instance Semigroup TextPicture where
-  (<>) = Over
-
-instance Monoid TextPicture where
-  mempty = Text ""
-
-drawTextPicture :: TextPicture -> IO ()
-drawTextPicture = go (0, 0)
-  where
-    go :: (Int, Int) -> TextPicture -> IO ()
-    go (x, y) = \case
-      Text s -> do
-        putStrAt (x, y) s
-      Translated (dx, dy) pic -> do
-        go (x + dx, y + dy) pic
-      Over pic1 pic2 -> do
-        go (x, y) pic1
-        go (x, y) pic2
 
 displayTUI :: ((Int, Int) -> TextPicture) -> IO ()
 displayTUI mkTextPicture = withTerminal $ do
-  clearScreen
-  screenSize <- getScreenSize
-  drawTextPicture (mkTextPicture screenSize)
-  refreshScreen
-  void waitForKey
-
--- A variant of playTUI in which the current world is controlled
--- programmatically via a TMQueue instead of being controlled by the user's
--- keypresses.
-roboPlayTUI
-  :: (world -> (Int, Int) -> TextPicture)
-  -> TMQueue world  -- input channel, close to quit
-  -> IO ()
-roboPlayTUI mkTextPicture worldQueue = do
-  screenSize <- getScreenSize
-  fix $ \loop -> do
-    atomically (readTMQueue worldQueue) >>= \case
-      Just world -> do
-        clearScreen
-        drawTextPicture (mkTextPicture world screenSize)
-        refreshScreen
-        loop
-      Nothing -> do
-        -- quit
-        pure ()
-
--- Emits Keys as they are pressed. More reusable than if it was emitting worlds.
--- Intended to be spawned by withAsync.
-keyboardThread
-  :: TQueue Key  -- output channel
-  -> IO ()
-keyboardThread keyQueue = do
-  key <- waitForKey
-  atomically $ writeTQueue keyQueue key
-  keyboardThread keyQueue
-
--- Receives Keys, emits worlds.
--- Intended to be spawned by withAsync.
-keyHandlingThread
-  :: world
-  -> (world -> Key -> Maybe world)
-  -> TQueue Key  -- input channel
-  -> TMQueue world  -- output channel, closed on Nothing
-  -> IO ()
-keyHandlingThread world handleKey keyQueue worldQueue = do
-  atomically $ writeTMQueue worldQueue world
-  key <- atomically $ readTQueue keyQueue
-  case handleKey world key of
-    Just world' -> do
-      keyHandlingThread world' handleKey keyQueue worldQueue
-    Nothing -> do
-      atomically $ closeTMQueue worldQueue
+  worldQueue <- newTMQueueIO
+  withAsync (pressAnyKeyThread () worldQueue) $ \_ -> do
+    roboPlayTUI (\() -> mkTextPicture) worldQueue
 
 playTUI
-  :: forall world
-   . world
+  :: forall world. world
   -> (world -> (Int, Int) -> TextPicture)
   -> (world -> Key -> Maybe world)
   -> IO ()
@@ -106,15 +37,149 @@ playTUI world0 mkTextPicture handleKey = withTerminal $ do
   keyQueue <- newTQueueIO
   worldQueue <- newTMQueueIO
   withAsync (keyboardThread keyQueue) $ \_ -> do
-    withAsync (keyHandlingThread world0 handleKey keyQueue worldQueue) $ \_ -> do
+    let handleKeyIO :: world -> Key -> IO (Maybe world)
+        handleKeyIO world key = do
+          pure $ handleKey world key
+    withAsync (foldingThread world0 handleKeyIO keyQueue worldQueue) $ \_ -> do
       roboPlayTUI mkTextPicture worldQueue
 
-multiplayTUI
-  :: world
-  -> (world -> Int -> (Int, Int) -> TextPicture)
-  -> (world -> Int -> Key -> Maybe world)
+-- A pure framework for a program which only acts as a client.
+-- Nothing to quit, otherwise update the world state and optionally send some
+-- messages to the server.
+clientTUI
+  :: (Binary toClient, Binary toServer)
+  => ([toServer], world)
+  -> (world -> (Int, Int) -> TextPicture)
+  -> ( world
+    -> Key
+    -> Maybe ([toServer], world)
+     )  -- handle key presses
+  -> ( world
+    -> Maybe toClient
+    -> Maybe ([toServer], world)
+     )  -- handle messages from the server
   -> IO ()
-multiplayTUI _world0 _mkTextPicture _handleKey = do
+clientTUI init0 mkTextPicture handleKey handleToClient = withTerminal $ do
+  IOFramework.client $ \toClientQueue toServerQueue -> do
+    keyQueue <- newTQueueIO
+    worldQueue <- newTMQueueIO
+    withAsync (keyboardThread keyQueue) $ \_ -> do
+      withAsync (pureClientTuiThread
+                   init0
+                   handleKey
+                   handleToClient
+                   keyQueue
+                   toClientQueue
+                   toServerQueue
+                   worldQueue) $ \_ -> do
+        roboPlayTUI mkTextPicture worldQueue
+
+-- A pure framework for a program which only acts as a server.
+-- Nothing to quit, otherwise update the world state and optionally send some
+-- messages to one or more clients.
+serverTUI
+  :: (Binary toClient, Binary toServer)
+  => world
+  -> (world -> (Int, Int) -> TextPicture)
+  -> ( world
+    -> Key
+    -> Maybe ([SendToClient toClient], world)
+     )  -- handle key presses
+  -> ( world
+    -> ServerEvent toServer
+    -> Maybe ([SendToClient toClient], world)
+     )  -- handle messages from the server
+  -> IO ()
+serverTUI world0 mkTextPicture handleKey handleToServer = withTerminal $ do
+  IOFramework.server $ \toServerQueue toClientQueue -> do
+    keyQueue <- newTQueueIO
+    worldQueue <- newTMQueueIO
+    withAsync (keyboardThread keyQueue) $ \_ -> do
+      withAsync (pureServerTuiThread
+                   world0
+                   handleKey
+                   handleToServer
+                   keyQueue
+                   toServerQueue
+                   toClientQueue
+                   worldQueue) $ \_ -> do
+        roboPlayTUI mkTextPicture worldQueue
+
+-- A pure framework for a program which can either act as a client or a server
+-- depending on its command-line arguments.
+clientServerTUI
+  :: (Binary toClient, Binary toServer)
+  => ([toServer], clientWorld)
+  -> (clientWorld -> (Int, Int) -> TextPicture)
+  -> ( clientWorld
+    -> Key
+    -> Maybe ([toServer], clientWorld)
+     )  -- handle key presses
+  -> ( clientWorld
+    -> Maybe toClient
+    -> Maybe ([toServer], clientWorld)
+     )  -- handle messages from the server
+  -> serverWorld
+  -> (serverWorld -> (Int, Int) -> TextPicture)
+  -> ( serverWorld
+    -> Key
+    -> Maybe ([SendToClient toClient], serverWorld)
+     )  -- handle key presses
+  -> ( serverWorld
+    -> ServerEvent toServer
+    -> Maybe ([SendToClient toClient], serverWorld)
+     )  -- handle messages from the server
+  -> IO ()
+clientServerTUI clientInit0 clientMkTextPicture
+                  clientHandleKey clientHandleToClient
+                serverWorld0 serverMkTextPicture
+                  serverHandleKey serverHandleToServer
+              = withTerminal $ do
+  let client toClientQueue toServerQueue = do
+        keyQueue <- newTQueueIO
+        worldQueue <- newTMQueueIO
+        withAsync (keyboardThread keyQueue) $ \_ -> do
+          withAsync (keyboardThread keyQueue) $ \_ -> do
+            withAsync (pureClientTuiThread
+                         clientInit0
+                         clientHandleKey
+                         clientHandleToClient
+                         keyQueue
+                         toClientQueue
+                         toServerQueue
+                         worldQueue) $ \_ -> do
+              roboPlayTUI clientMkTextPicture worldQueue
+  let server toServerQueue toClientQueue = do
+        keyQueue <- newTQueueIO
+        worldQueue <- newTMQueueIO
+        withAsync (keyboardThread keyQueue) $ \_ -> do
+          withAsync (pureServerTuiThread
+                       serverWorld0
+                       serverHandleKey
+                       serverHandleToServer
+                       keyQueue
+                       toServerQueue
+                       toClientQueue
+                       worldQueue) $ \_ -> do
+            roboPlayTUI serverMkTextPicture worldQueue
+  IOFramework.clientServer client server
+
+networkedPlayTUI
+  :: (Binary toServer, Binary toClient)
+  => server
+  -> (server -> (Int, Int) -> TextPicture)
+  -> (server -> Key -> Maybe ([(Int, toClient)], server))
+  -> (server -> ServerEvent toServer -> Maybe ([(Int, toClient)], server))
+  -> client
+  -> (client -> (Int, Int) -> TextPicture)
+  -> (client -> Key -> Maybe client)
+  -> (client -> toClient -> Maybe ([toServer], client))
+  -> IO ()
+networkedPlayTUI _serverWorld0 _serverMkTextPicture
+                   _serverHandleKey _serverHandleNetwork
+                 _clientWorld0 _clientMkTextPicture
+                   _clientHandleKey _clientHandleNetwork
+               = do
   getArgs >>= \case
     ["server", host, port] -> do
       putStrLn "spinning server..."

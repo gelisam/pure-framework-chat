@@ -11,7 +11,9 @@ extra-source-files:
 dependencies:
 - async
 - base
+- binary
 - bytestring
+- containers
 - network-simple
 - stm
 - stm-chans
