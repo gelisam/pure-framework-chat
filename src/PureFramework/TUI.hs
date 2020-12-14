@@ -139,16 +139,15 @@ clientServerTUI clientInit0 clientMkTextPicture
         keyQueue <- newTQueueIO
         worldQueue <- newTMQueueIO
         withAsync (keyboardThread keyQueue) $ \_ -> do
-          withAsync (keyboardThread keyQueue) $ \_ -> do
-            withAsync (pureClientTuiThread
-                         clientInit0
-                         clientHandleKey
-                         clientHandleToClient
-                         keyQueue
-                         toClientQueue
-                         toServerQueue
-                         worldQueue) $ \_ -> do
-              roboPlayTUI clientMkTextPicture worldQueue
+          withAsync (pureClientTuiThread
+                       clientInit0
+                       clientHandleKey
+                       clientHandleToClient
+                       keyQueue
+                       toClientQueue
+                       toServerQueue
+                       worldQueue) $ \_ -> do
+            roboPlayTUI clientMkTextPicture worldQueue
   let server toServerQueue toClientQueue = do
         keyQueue <- newTQueueIO
         worldQueue <- newTMQueueIO
