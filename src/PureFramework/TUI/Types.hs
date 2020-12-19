@@ -1,8 +1,11 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE DeriveGeneric, LambdaCase #-}
+{-# OPTIONS -Wno-orphans #-}
 module PureFramework.TUI.Types
   ( module PureFramework.TUI.Types
   , Key(..)
   ) where
+
+import Data.Binary (Binary)
 
 import ImperativeVty
 
@@ -30,3 +33,5 @@ drawTextPicture = go (0, 0)
       Over pic1 pic2 -> do
         go (x, y) pic1
         go (x, y) pic2
+
+instance Binary Key where

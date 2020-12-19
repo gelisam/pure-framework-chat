@@ -1,6 +1,8 @@
-{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveFunctor, DeriveGeneric #-}
 module PureFramework.ClientServer.Types where
 
+import Data.Binary (Binary)
+import GHC.Generics (Generic)
 import qualified Network.Simple.TCP as TCP
 
 
@@ -18,4 +20,6 @@ data SendToClient toClient = SendToClient
   { clientTarget :: ClientNumber
   , clientMessage :: toClient
   }
-  deriving Functor
+  deriving (Functor, Generic)
+
+instance Binary a => Binary (SendToClient a)

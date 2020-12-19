@@ -1,42 +1,11 @@
-{-# LANGUAGE LambdaCase, RecordWildCards, ViewPatterns #-}
+{-# LANGUAGE LambdaCase, RecordWildCards, TupleSections, ViewPatterns #-}
 module Main where
 
-import Data.Set (Set)
-import qualified Data.Set as Set
+import Data.List.Index
 
 import ImperativeVty
 import PureFramework.TUI
-
-
-textBlock :: [String] -> TextPicture
-textBlock ss
-  = mconcat [ Translated (0, y) (Text s)
-            | (y, s) <- zip [0..] ss
-            ]
-
-centeredTextBlock :: [String] -> (Int, Int) -> TextPicture
-centeredTextBlock ss (ww, hh)
-  = Translated (x, y) (textBlock ss)
-  where
-    w = maximum (0 : fmap length ss)
-    h = length ss
-    x = (ww - w) `div` 2
-    y = (hh - h) `div` 2
-
--- (x1,y1)-----------+
---    |              |
---    |              |
---    +-----------(x2,y2)
-border :: (Int, Int) -> (Int, Int) -> TextPicture
-border (x1,y1) (x2,y2)
-  = Translated (x1, y1) fullRow
- <> mconcat [ Translated (x1, y) emptyRow
-            | y <- [y1+1..y2-1]
-            ]
- <> Translated (x1, y2) fullRow
- where
-   fullRow = Text ("+" ++ replicate (x2-x1-1) '-' ++ "+")
-   emptyRow = Text "|" <> Translated (x2-x1, 0) (Text "|")
+import PureFramework.TUI.TextPicture
 
 
 type Username = String
@@ -123,167 +92,109 @@ handleEditboxKey = \case
     -> Nothing
 
 data Screen = Screen
-  { render    :: [Message] -> (Int, Int) -> TextPicture
-  , handleKey :: Key -> Maybe ([Message], Screen)
+  { render    :: Int -> (Int, Int) -> TextPicture
+  , handleKey :: Int -> Key -> Maybe Screen
   }
 
-initialScreen :: Screen
-initialScreen = usernameScreen initialUsernameForm
+data Status
+  = Chosen Username
+  | Choosing UsernameForm
 
-usernameScreen :: UsernameForm -> Screen
-usernameScreen usernameForm = Screen
-  { render    = \_ -> renderUsernameForm usernameForm
-  , handleKey = \case
-      KEsc
-        -- quit
-        -> Nothing
-      KEnter
-       -- the user picked a username; proceed to the chat loop
-        -> pure
-         $ pure
-         $ chatLoopScreen (readUsername usernameForm) initialChat
-      (handleEditboxKey -> Just f)
-        -- edit the username
-        -> pure
-         $ pure
-         $ usernameScreen
-         $ modifyUsername f usernameForm
-      _ -> pure
-         $ pure
-         $ usernameScreen usernameForm
+hasChosen :: Status -> Bool
+hasChosen = \case
+  Chosen _
+    -> True
+  _ -> False
+
+hasEveryoneChosen :: [Status] -> Maybe [Username]
+hasEveryoneChosen = \case
+  [] -> do
+    pure []
+  Chosen username : statuses -> do
+    (username :) <$> hasEveryoneChosen statuses
+  _ -> do
+    Nothing
+
+initialScreen :: Int  -- ^ user count
+              -> Screen
+initialScreen n = usernameScreen (replicate n (Choosing initialUsernameForm))
+
+usernameScreen :: [Status]  -- one for each user
+               -> Screen
+usernameScreen statuses = Screen
+  { render    = \clientNumber
+             -> case statuses !! clientNumber of
+                  Chosen _
+                    -> centeredTextBlock
+                         [ "Waiting for others to"
+                         , "pick a username as well..."
+                         ]
+                  Choosing usernameForm
+                    -> renderUsernameForm usernameForm
+  , handleKey = \clientNumber
+             -> case statuses !! clientNumber of
+                  Chosen _
+                    -> \case
+                         KEsc -> do
+                           -- quit
+                           Nothing
+                         _ -> do
+                           pure $ usernameScreen statuses
+                  Choosing usernameForm
+                    -> \case
+                         KEsc -> do
+                           -- quit
+                           Nothing
+                         KEnter -> do
+                           -- the current user picked a username
+                           let statuses' = setAt clientNumber
+                                                 (Chosen $ readUsername usernameForm)
+                                                 statuses
+                           case hasEveryoneChosen statuses' of
+                             Just usernames -> do
+                               pure $ chatLoopScreen (fmap (,initialChat) usernames) []
+                             Nothing -> do
+                               pure $ usernameScreen statuses'
+                         (handleEditboxKey -> Just f) -> do
+                           -- edit the username
+                           let statuses' = setAt clientNumber
+                                                 (Choosing $ modifyUsername f usernameForm)
+                                                 statuses
+                           pure $ usernameScreen statuses'
+                         _ -> do
+                           pure $ usernameScreen statuses
   }
 
-chatLoopScreen :: Username -> Chat -> Screen
-chatLoopScreen username chat = Screen
-  { render    = renderChat chat
-  , handleKey = \case
-      KEsc
-        -- quit
-        -> Nothing
-      KEnter
-        -- send the edit box's message, clear the edit box
-        -> Just ( [(username, readEditbox chat)]
-                , chatLoopScreen username
-                $ modifyEditbox (const "")
-                $ chat
-                )
-      (handleEditboxKey -> Just f)
-        -- delegate to the edit box
-        -> pure
-         $ pure
-         $ chatLoopScreen username
-         $ modifyEditbox f
-         $ chat
-      _ -> pure
-         $ pure
-         $ chatLoopScreen username chat
+chatLoopScreen :: [(Username, Chat)] -> [Message] -> Screen
+chatLoopScreen chats msgs = Screen
+  { render    = \clientNumber
+             -> let (_, chat) = chats !! clientNumber
+             in renderChat chat msgs
+  , handleKey = \clientNumber
+             -> let (username, chat) = chats !! clientNumber
+             in \case
+                  KEsc -> do
+                    -- quit
+                    Nothing
+                  KEnter -> do
+                    -- send the edit box's message, clear the edit box
+                    let msg = (username, readEditbox chat)
+                    let msgs' = msg : msgs
+                    let chat' = modifyEditbox (const "") chat
+                    let chats' = setAt clientNumber (username, chat') chats
+                    pure $ chatLoopScreen chats' msgs'
+                  (handleEditboxKey -> Just f) -> do
+                    -- delegate to the edit box
+                    let chat' = modifyEditbox f chat
+                    let chats' = setAt clientNumber (username, chat') chats
+                    pure $ chatLoopScreen chats' msgs
+                  _ -> do
+                    pure $ chatLoopScreen chats msgs
   }
 
-data ClientModel = ClientModel
-  { clientMessages :: [Message]  -- most recent first
-  , clientScreen   :: Screen
-  }
-
-data ServerModel = ServerModel
-  { serverClients  :: Set ClientNumber
-  , serverMessages :: [Message]  -- most recent first
-  , serverScreen   :: Screen
-  }
-
-sendMessageToAll
-  :: ServerModel
-  -> Message
-  -> ([SendToClient Message], ServerModel)
-sendMessageToAll serverModel@(ServerModel {..}) msg
-  = ( [ SendToClient clientNumber msg
-      | clientNumber <- Set.toList serverClients
-      ]
-    , serverModel { serverMessages = msg : serverMessages }
-    )
-
-sendMessagesToAll
-  :: ServerModel
-  -> [Message]
-  -> ([SendToClient Message], ServerModel)
-sendMessagesToAll serverModel = \case
-  []
-    -> ([], serverModel)
-  msg : msgs
-    -> let (out1, serverModel') = sendMessageToAll serverModel msg
-           (out2, serverModel'') = sendMessagesToAll serverModel' msgs
-       in (out1 ++ out2, serverModel'')
+chatTUI :: Int  -- ^ user count
+        -> IO ()
+chatTUI userCount = multiplayTUI (initialScreen userCount) (userCount - 1) render handleKey
 
 main :: IO ()
-main = clientServerTUI (pure clientInit) clientRender
-                         clientHandleKey clientHandleToClient
-                       serverInit serverRender
-                         serverHandleKey serverHandleToServer
-  where
-    clientInit :: ClientModel
-    clientInit = ClientModel
-      { clientMessages = []
-      , clientScreen   = initialScreen
-      }
-
-    serverInit :: ServerModel
-    serverInit = ServerModel
-      { serverClients  = Set.empty
-      , serverMessages = []
-      , serverScreen   = initialScreen
-      }
-
-    clientRender :: ClientModel -> (Int, Int) -> TextPicture
-    clientRender (ClientModel {..})
-      = render clientScreen clientMessages
-
-    serverRender :: ServerModel -> (Int, Int) -> TextPicture
-    serverRender (ServerModel {..})
-      = render serverScreen serverMessages
-
-    clientHandleKey
-      :: ClientModel
-      -> Key
-      -> Maybe ([Message], ClientModel)
-    clientHandleKey clientModel key = do
-      let screen = clientScreen clientModel
-      (out, screen') <- handleKey screen key
-      let clientModel' = clientModel { clientScreen = screen' }
-      pure (out, clientModel')
-
-    serverHandleKey
-      :: ServerModel
-      -> Key
-      -> Maybe ([SendToClient Message], ServerModel)
-    serverHandleKey serverModel@(ServerModel {..}) key = do
-      (msgs, screen') <- handleKey serverScreen key
-      let serverModel' = serverModel { serverScreen = screen' }
-      pure $ sendMessagesToAll serverModel' msgs
-
-    clientHandleToClient
-      :: ClientModel
-      -> Maybe Message
-      -> Maybe ([Message], ClientModel)
-    clientHandleToClient clientModel maybeMessage = do
-      let messages = clientMessages clientModel
-      message <- maybeMessage
-      let messages' = message : messages
-      let clientModel' = clientModel { clientMessages = messages' }
-      Just ([], clientModel')
-
-    serverHandleToServer
-      :: ServerModel
-      -> ServerEvent Message
-      -> Maybe ([SendToClient Message], ServerModel)
-    serverHandleToServer serverModel = \case
-      ClientConnected clientNumber -> do
-        let clients = serverClients serverModel
-        let clients' = Set.insert clientNumber clients
-        let serverModel' = serverModel { serverClients = clients' }
-        pure ([], serverModel')
-      ClientDisconnected clientNumber -> do
-        let clients = serverClients serverModel
-        let clients' = Set.delete clientNumber clients
-        let serverModel' = serverModel { serverClients = clients' }
-        pure ([], serverModel')
-      MessageFromClient _ msg -> do
-        pure $ sendMessageToAll serverModel msg
+main = chatTUI 2
