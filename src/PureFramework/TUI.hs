@@ -9,6 +9,8 @@ import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TMQueue
 import Data.Binary (Binary)
+import Data.List (foldl')
+import Data.Maybe (fromMaybe)
 import GHC.Generics (Generic)
 
 import ImperativeVty
@@ -170,6 +172,7 @@ data ClientStatus world
   | ClientActive
       ClientNumber
       world
+      [Key]  -- ^ sent to the server but not yet confirmed
   deriving (Binary, Generic)
 
 data ServerStatus world
@@ -198,6 +201,21 @@ multiplayTUI
   -> (world -> Int -> Key -> Maybe world)
   -> IO ()
 multiplayTUI world0 clientCount mkTextPicture handleKey = do
+  -- optimistically apply the keys which have been sent but not yet confirmed,
+  -- hoping that they'll be confirmed with no interference from other players
+  -- in-between.
+  let optimistic
+        :: Int
+        -> [Key]
+        -> world
+        -> Maybe world
+      optimistic clientNumber keys w0
+        = foldl' (\maybeWorld key -> do
+                  world <- maybeWorld
+                  handleKey world clientNumber key)
+                 (Just w0)
+                 keys
+
   let clientInit0
         :: ([Key], ClientStatus world)
       clientInit0 = ([], ClientWaiting 0)
@@ -219,8 +237,10 @@ multiplayTUI world0 clientCount mkTextPicture handleKey = do
           -> centeredTextBlock [ "client limit reached,"
                                , "sorry"
                                ]
-        ClientActive clientNumber world
-          -> mkTextPicture world clientNumber
+        ClientActive clientNumber world sentKeys
+          -> mkTextPicture
+               (fromMaybe world $ optimistic clientNumber sentKeys world)
+               clientNumber
 
   let clientHandleKey
         :: ClientStatus world
@@ -228,8 +248,13 @@ multiplayTUI world0 clientCount mkTextPicture handleKey = do
         -> Maybe ([Key], ClientStatus world)
       clientHandleKey status key = do
         case status of
-          ClientActive clientNumber world -> do
-            pure ([key], ClientActive clientNumber world)
+          ClientActive clientNumber world sentKeys -> do
+            let sentKeys' = sentKeys ++ [key]
+
+            -- don't wait for the server to confirm if the user wants to quit
+            _ <- optimistic clientNumber sentKeys' world
+
+            pure ([key], ClientActive clientNumber world sentKeys')
           _ -> do
             case key of
               KEsc -> do
@@ -249,10 +274,14 @@ multiplayTUI world0 clientCount mkTextPicture handleKey = do
           (_, ClientLimitReached) -> do
             pure ([], ClientRejectedClientLimitReached)
           (_, Begin clientNumber) -> do
-            pure ([], ClientActive clientNumber world0)
-          (ClientActive clientNumber world, Continue i key) -> do
+            pure ([], ClientActive clientNumber world0 [])
+          (ClientActive clientNumber world sentKeys, Continue i key) -> do
+            let sentKeys' = if i == clientNumber
+                            then -- assert (key == head sentKeys)
+                                 drop 1 sentKeys
+                            else sentKeys
             world' <- handleKey world i key
-            pure ([], ClientActive clientNumber world')
+            pure ([], ClientActive clientNumber world' sentKeys')
           _ -> do
             pure ([], status)
 
